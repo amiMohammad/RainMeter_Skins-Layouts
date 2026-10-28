@@ -1,37 +1,103 @@
 
-      - name: Prepare release details
-        if: steps.files.outputs.found == 'true'
-        id: release
+name: Auto Release RMSKIN Files
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rmskin-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish RMSKIN Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find changed RMSKIN files
+        id: files
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          FILES: ${{ steps.files.outputs.files }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
 
-          # Find the next available sequential Skin_N tag.
-          gh release list \
-            --repo "$REPOSITORY" \
-            --limit 1000 \
-            --json tagName \
-            --jq '.[].tagName' > existing-tags.txt
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "Manual runs do not identify uploaded files."
+            exit 0
+          fi
+
+          if [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
+            CHANGED=$(git ls-tree -r --name-only "$AFTER_SHA")
+          else
+            CHANGED=$(git diff --name-only --diff-filter=AM "$BEFORE_SHA" "$AFTER_SHA")
+          fi
+
+          : > rmskin-files.txt
+
+          while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+
+            if [[ "$file" =~ \.[rR][mM][sS][kK][iI][nN]$ ]] && [[ -f "$file" ]]; then
+              printf '%s\n' "$file" >> rmskin-files.txt
+            fi
+          done <<< "$CHANGED"
+
+          if [[ ! -s rmskin-files.txt ]]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No RMSKIN files changed."
+            exit 0
+          fi
+
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      - name: Allocate next release tag
+        if: steps.files.outputs.found == 'true'
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Fetch all existing Skin_N tags.
+          git fetch --force --tags
 
           MAX=0
           while IFS= read -r tag; do
             if [[ "$tag" =~ ^Skin_([0-9]+)$ ]]; then
               N="${BASH_REMATCH[1]}"
               if (( N > MAX )); then
-                MAX=$N
+                MAX="$N"
               fi
             fi
-          done < existing-tags.txt
+          done < <(git tag --list 'Skin_*')
 
           NEXT=$((MAX + 1))
           TAG="Skin_${NEXT}"
 
+          # Reserve the tag before creating the release.
+          git tag "$TAG" "$SHA"
+          git push origin "refs/tags/$TAG"
+
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Creating release: $TAG"
+          echo "Created tag: $TAG"
 
           IMAGE="iShadow_Clock-Date_by_Mohammad_Hasib.png"
           if [[ ! -f "$IMAGE" ]]; then
@@ -40,11 +106,11 @@
 
           {
             if [[ -f "$IMAGE" ]]; then
-              echo "![iShadow Clock-Date by Mohammad Hasib](https://raw.githubusercontent.com/${REPOSITORY}/${GITHUB_SHA}/${IMAGE})"
+              echo "![iShadow Clock-Date by Mohammad Hasib](https://raw.githubusercontent.com/${REPOSITORY}/${SHA}/${IMAGE})"
               echo
             fi
 
-            echo "# $TAG"
+            echo "# ${TAG}"
             echo
             echo "## Direct Downloads"
             echo
@@ -53,18 +119,24 @@
               [[ -z "$file" ]] && continue
               name="${file##*/}"
               encoded_name=$(python3 -c \
-                'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' \
-                "$name")
+                'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$name")
               echo "- [$name](https://github.com/${REPOSITORY}/releases/download/${TAG}/${encoded_name})"
-            done <<< "$FILES"
+            done < rmskin-files.txt
 
             echo
             echo "---"
             echo "Original RMSKIN files only. No ZIP packages."
           } > release-notes.md
 
-          {
-            echo "files<<RMSKIN_UPLOAD_EOF"
-            printf '%s' "$FILES"
-            echo "RMSKIN_UPLOAD_EOF"
-          } >> "$GITHUB_OUTPUT"
+      - name: Publish GitHub Release
+        if: steps.files.outputs.found == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          name: ${{ steps.release.outputs.tag }}
+          body_path: release-notes.md
+          files: |
+            ${{ steps.files.outputs.files }}
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: false
