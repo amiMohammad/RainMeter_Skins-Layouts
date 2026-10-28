@@ -1,0 +1,70 @@
+
+      - name: Prepare release details
+        if: steps.files.outputs.found == 'true'
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          FILES: ${{ steps.files.outputs.files }}
+        run: |
+          set -euo pipefail
+
+          # Find the next available sequential Skin_N tag.
+          gh release list \
+            --repo "$REPOSITORY" \
+            --limit 1000 \
+            --json tagName \
+            --jq '.[].tagName' > existing-tags.txt
+
+          MAX=0
+          while IFS= read -r tag; do
+            if [[ "$tag" =~ ^Skin_([0-9]+)$ ]]; then
+              N="${BASH_REMATCH[1]}"
+              if (( N > MAX )); then
+                MAX=$N
+              fi
+            fi
+          done < existing-tags.txt
+
+          NEXT=$((MAX + 1))
+          TAG="Skin_${NEXT}"
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Creating release: $TAG"
+
+          IMAGE="iShadow_Clock-Date_by_Mohammad_Hasib.png"
+          if [[ ! -f "$IMAGE" ]]; then
+            IMAGE="iShadow_Clock-Date_by_Mohammad_Hasib.jpg"
+          fi
+
+          {
+            if [[ -f "$IMAGE" ]]; then
+              echo "![iShadow Clock-Date by Mohammad Hasib](https://raw.githubusercontent.com/${REPOSITORY}/${GITHUB_SHA}/${IMAGE})"
+              echo
+            fi
+
+            echo "# $TAG"
+            echo
+            echo "## Direct Downloads"
+            echo
+
+            while IFS= read -r file; do
+              [[ -z "$file" ]] && continue
+              name="${file##*/}"
+              encoded_name=$(python3 -c \
+                'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' \
+                "$name")
+              echo "- [$name](https://github.com/${REPOSITORY}/releases/download/${TAG}/${encoded_name})"
+            done <<< "$FILES"
+
+            echo
+            echo "---"
+            echo "Original RMSKIN files only. No ZIP packages."
+          } > release-notes.md
+
+          {
+            echo "files<<RMSKIN_UPLOAD_EOF"
+            printf '%s' "$FILES"
+            echo "RMSKIN_UPLOAD_EOF"
+          } >> "$GITHUB_OUTPUT"
