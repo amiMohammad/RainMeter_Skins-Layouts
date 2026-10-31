@@ -1,4 +1,3 @@
-
 name: Publish RMSKIN Releases
 
 on:
@@ -16,7 +15,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -56,10 +55,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          IMAGE="iShadow_Clock-Date_by_Mohammad_Hasib.png"
+          IMAGE="Simple_Colorful_Desk_2.0_by_AMiMohammad.png"
 
           if [[ ! -f "$IMAGE" ]]; then
-            IMAGE="iShadow_Clock-Date_by_Mohammad_Hasib.jpg"
+            IMAGE="Simple_Colorful_Desk_2.0_by_AMiMohammadb.jpg"
           fi
 
           while IFS= read -r FILE; do
