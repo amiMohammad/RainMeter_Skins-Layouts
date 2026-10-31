@@ -28,15 +28,21 @@ jobs:
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             FILES=$(find . -type f -name "*.rmskin" -not -path "./.git/*" | sort)
           else
-            FILES=$(git diff --name-only --diff-filter=AMR \
-              "${{ github.event.before }}" \
-              "${{ github.sha }}" -- '*.rmskin')
+            BEFORE="${{ github.event.before }}"
+
+            if [[ "$BEFORE" =~ ^0+$ ]]; then
+              FILES=$(find . -type f -name "*.rmskin" -not -path "./.git/*" | sort)
+            else
+              FILES=$(git diff --name-only --diff-filter=AMR \
+                "$BEFORE" "${GITHUB_SHA}" -- '*.rmskin')
+            fi
           fi
 
           if [[ -z "$FILES" ]]; then
             echo "found=false" >> "$GITHUB_OUTPUT"
           else
             echo "found=true" >> "$GITHUB_OUTPUT"
+
             {
               echo "files<<EOF"
               echo "$FILES"
@@ -51,33 +57,59 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FILES: ${{ steps.files.outputs.files }}
           REPOSITORY: ${{ github.repository }}
-          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
-          IMAGE="Simple_Colorful_Desk_2.0_by_AMiMohammad.png"
-
-          if [[ ! -f "$IMAGE" ]]; then
-            IMAGE="Simple_Colorful_Desk_2.0_by_AMiMohammadb.jpg"
-          fi
+          shopt -s nocaseglob nullglob
 
           while IFS= read -r FILE; do
             [[ -z "$FILE" || ! -f "$FILE" ]] && continue
 
+            DIR="${FILE%/*}"
             FILENAME="${FILE##*/}"
-            TAG="${FILENAME%.rmskin}"
+            BASENAME="${FILENAME%.rmskin}"
+
+            # Generate release tag from filename.
+            TAG="$BASENAME"
 
             TAG=$(printf '%s' "$TAG" | sed -E \
               's/_(by_AMiMohammad|by_AMiShadow|by_Mohammad_Hasib|by_AMiSnake)$//I')
 
             echo "Publishing: $TAG"
 
+            # Find matching preview image.
+            PREVIEW=""
+
+            for SUFFIX in "" "_Preview"; do
+              for EXT in png jpg webp gif; do
+                MATCHES=( "$DIR/$BASENAME$SUFFIX.$EXT" )
+
+                if [[ -f "${MATCHES[0]:-}" ]]; then
+                  PREVIEW="${MATCHES[0]}"
+                  break 2
+                fi
+              done
+            done
+
+            # Build release notes.
             NOTES=""
 
-            if [[ -f "$IMAGE" ]]; then
-              NOTES="![Preview](https://raw.githubusercontent.com/${REPOSITORY}/${BRANCH}/${IMAGE})"
+            if [[ -n "$PREVIEW" ]]; then
+              IMAGE_PATH="${PREVIEW#./}"
+
+              IMAGE_URL=$(python3 -c \
+                'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe="/"))' \
+                "$IMAGE_PATH")
+
+              NOTES="![Preview](https://raw.githubusercontent.com/${REPOSITORY}/${SHA}/${IMAGE_URL})"
+
+              echo "Preview image: $PREVIEW"
+            else
+              echo "No matching preview image found for $FILENAME"
             fi
 
+            # Update an existing release or create a new one.
             if gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
               gh release edit "$TAG" \
                 --repo "$REPOSITORY" \
